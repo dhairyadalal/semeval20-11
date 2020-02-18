@@ -1,6 +1,6 @@
 from typing import List
 
-def generate_t2_submissions(preds: List[str]) -> List[str]:
+def generate_t2_sub(preds: List[str]) -> List[str]:
     """ Take a list of prediction and update the TC template
         with those predictions """
     with open("data/dev-task-TC-template.out", "r") as f:
@@ -13,3 +13,4 @@ def generate_t2_submissions(preds: List[str]) -> List[str]:
         final.append(line)
     
     return final
+
