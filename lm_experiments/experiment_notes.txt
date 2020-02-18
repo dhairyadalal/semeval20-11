@@ -1,0 +1,40 @@
+Bert-Base Finetuning
+Data:
+    - lm_train and val is a mixture of train and dev articles
+Perplexity: 6.5
+Params: 
+    python run_lm_finetuning.py \
+    --output_dir=bb_lm_ft \
+    --model_type=bert \
+    --model_name_or_path=bert-base-uncased \
+    --do_train \
+    --train_data_file=data/lm_train.txt \
+    --do_eval \
+    --eval_data_file=data/lm_val.txt \
+    --mlm \
+    --overwrite_cache \
+    --overwrite_output_dir \
+    --fp16 \
+    --gradient_accumulation_steps 4 \
+    --num_train_epochs 10
+
+AlBert-Base Finetuning
+Data:
+    - lm_train and val is a mixture of train and dev articles
+Perplexity: 6.5
+Params: 
+    python run_lm_finetuning.py \
+    --output_dir=bb_lm_ft \
+    --model_type=bert \
+    --model_name_or_path=bert-base-uncased \
+    --do_train \
+    --train_data_file=data/lm_train.txt \
+    --do_eval \
+    --eval_data_file=data/lm_val.txt \
+    --mlm \
+    --overwrite_cache \
+    --overwrite_output_dir \
+    --fp16 \
+    --gradient_accumulation_steps 4 \
+    --num_train_epochs 10
+
