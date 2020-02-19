@@ -40,15 +40,15 @@ def get_span_text(start: int, end: int, article: str) -> str:
     return article[start: end]
 
 def get_task1_file(article_id: int) -> str:
-    prefix = "datasets/train-labels-task1-span-identification/"
+    prefix = "data/train-labels-task1-span-identification/"
     return prefix+"article"+article_id+".task1-SI.labels"
 
 def get_task2_file(article_id: int) -> str:
-    prefix = "datasets/train-labels-task2-technique-classification/"
+    prefix = "data/train-labels-task2-technique-classification/"
     return prefix+"article"+article_id+".task2-TC.labels"
 
 def get_article_file(article_id: int) -> str:
-    return "datasets/train-articles/article" + str(article_id) + ".txt"
+    return "data/train-articles/article" + str(article_id) + ".txt"
 
 def get_dev_article_file(article_id: int) -> str:
-    return "datasets/dev-articles/article" + str(article_id) + ".txt"
+    return "data/dev-articles/article" + str(article_id) + ".txt"
