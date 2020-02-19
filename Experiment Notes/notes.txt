@@ -1,0 +1,9 @@
+Task 1
+
+
+Task 2
+- TFIDF SVM perform better than neural model on F1 Bandwagon,Reductio_ad_hitlerum
+- Overall Bert-large out of the box has best over micro-f1 but generally poor 
+performance per class
+- Adding self attention after a transformer layer greatly increases training time
+and is quite expensive. 
