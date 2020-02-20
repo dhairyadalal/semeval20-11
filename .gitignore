@@ -4,3 +4,4 @@ bb_lm_ft/*
 *.bin
 *.pt
 runs/*
+*.pyc
