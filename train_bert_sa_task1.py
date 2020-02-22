@@ -5,7 +5,7 @@ from imblearn.over_sampling import RandomOverSampler
 import pandas as pd
 from keras.preprocessing.sequence import pad_sequences
 from sklearn.model_selection import train_test_split
-from transformers import DistilBertForTokenClassification, DistilBertTokenizer
+from transformers import BertTokenizer, BertForTokenClassification
 import torch
 from torch.optim import Adam
 from torch.utils.data import TensorDataset, DataLoader, RandomSampler, SequentialSampler
@@ -18,10 +18,10 @@ dat = pd.read_csv("data/task1_data.csv")
 tag_to_idx = {"O": 0, "B-I": 1, "I-I": 2, "X": 3}
 idx_to_tag  = ["O", "B-I", "I-I", "X"]
 
-tokenizer = DistilBertTokenizer.from_pretrained("distilbert-base-uncased")
+tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
 
 MAX_LEN = 180
-BATCH_SIZE = 32
+BATCH_SIZE = 20
 
 def labels_to_ids(annotation: List[str]) -> List[int]:
     return [tag_to_idx[i] for i in annotation]
@@ -72,7 +72,6 @@ y_train_rs = torch.tensor(y_train_rs)
 y_val = torch.tensor(y_val)
 
 # %%
-
 train_data = TensorDataset(X_train_rs, tr_masks_rs, y_train_rs)
 train_dataloader_ = DataLoader(train_data,
                                sampler=RandomSampler(train_data),
@@ -80,24 +79,8 @@ train_dataloader_ = DataLoader(train_data,
 
 val_data = TensorDataset(X_val, val_masks, y_val)
 val_dataloader_ = DataLoader(val_data, 
-                             sampler=SequentialSampler(val_data),
                              batch_size=BATCH_SIZE)
-
 #%%
-model = DistilBertForTokenClassification.from_pretrained("distilbert-base-uncased",
-                                                         num_labels=len(tag_to_idx))
-
-param_optimizer = list(model.named_parameters())
-no_decay = ['bias', 'gamma', 'beta']
-optimizer_grouped_parameters = [
-    {'params': [p for n, p in param_optimizer if not any(nd in n for nd in no_decay)],
-        'weight_decay_rate': 0.01},
-    {'params': [p for n, p in param_optimizer if any(nd in n for nd in no_decay)],
-        'weight_decay_rate': 0.0}
-]
-optimizer = Adam(optimizer_grouped_parameters, lr=3e-5)
-# %%
-
 from seqeval.metrics import f1_score
 
 def flat_accuracy(preds, labels):
@@ -106,70 +89,84 @@ def flat_accuracy(preds, labels):
     return np.sum(pred_flat == labels_flat) / len(labels_flat)
 
 # %%
-epochs = 5
-max_grad_norm = 1
+import pytorch_lightning as pl
+import torch.nn as nn
 
-model.cuda()
-device = "cuda:0"
-
-for _ in trange(epochs, desc="Epoch"):
-    # TRAIN loop
-    model.train()
-    tr_loss = 0
-    nb_tr_examples, nb_tr_steps = 0, 0
-    for step, batch in enumerate(train_dataloader_):
-        # add batch to gpu
-        batch = tuple(t.to(device) for t in batch)
-        b_input_ids, b_input_mask, b_labels = batch
-        # forward pass
-        loss = model(b_input_ids, attention_mask=b_input_mask, labels=b_labels)
-        # backward pass
-        loss.backward()
-        # track train loss
-        tr_loss += loss.item()
-        nb_tr_examples += b_input_ids.size(0)
-        nb_tr_steps += 1
-        # gradient clipping
-        torch.nn.utils.clip_grad_norm_(parameters=model.parameters(), 
-                                       max_norm=max_grad_norm)
-        # update parameters
-        optimizer.step()
-        model.zero_grad()
-    # print train loss per epoch
-    print("Train loss: {}".format(tr_loss/nb_tr_steps))
+class BertClassifier(pl.LightningModule):
     
-    # VALIDATION on validation set
-    model.eval()
-    eval_loss, eval_accuracy = 0, 0
-    nb_eval_steps, nb_eval_examples = 0, 0
-    predictions , true_labels = [], []
-    for batch in val_dataloader_:
-        batch = tuple(t.to(device) for t in batch)
-        b_input_ids, b_input_mask, b_labels = batch
+    def __init__(self, 
+                 num_classes: int,
+                 bert_weights: str):
+        super(BertClassifier, self).__init__()
         
-        with torch.no_grad():
-            tmp_eval_loss = model(b_input_ids, 
-                                  attention_mask=b_input_mask, 
-                                  labels=b_labels)
-            logits = model(b_input_ids, attention_mask=b_input_mask)
+        self.bert = BertForTokenClassification.from_pretrained(bert_weights)
+    
+    def forward(self, 
+                input_ids: torch.tensor,
+                input_mask: torch.tensor,
+                labels: torch):
+        return self.bert(input_ids, input_mask, labels)
+    
+    def training_step(self, batch, batch_idx):
+        
+        input_ids, mask, labels = batch
+        
+        loss = self.forward(input_ids, mask, labels)
+        loss = loss[0]
+        
+        tensorboard_logs = {'train_loss': loss}
+        return {'loss': loss, 'log': tensorboard_logs}
+    
+    def validation_step(self, batch, batch_idx):
+        input_ids, mask, labels = batch
+        
+        loss, logits = self.forward(input_ids, mask, labels)
+        
         logits = logits.detach().cpu().numpy()
-        label_ids = b_labels.to('cpu').numpy()
-        predictions.extend([list(p) for p in np.argmax(logits, axis=2)])
-        true_labels.append(label_ids)
+        labels = labels.detach().cpu().numpy()
         
-        tmp_eval_accuracy = flat_accuracy(logits, label_ids)
+        val_acc = flat_accuracy(logits, labels)
+         
+        return {'val_loss': loss, 'val_acc': val_acc}
+    
+    def validation_end(self, outputs):
+        avg_loss = torch.stack(x["val_loss"] for x in outputs).mean()
+        avg_val_acc = torch.stack(x["val_acc"] for x in outputs).mean()
         
-        eval_loss += tmp_eval_loss.mean().item()
-        eval_accuracy += tmp_eval_accuracy
-        
-        nb_eval_examples += b_input_ids.size(0)
-        nb_eval_steps += 1
-    eval_loss = eval_loss/nb_eval_steps
-    print("Validation loss: {}".format(eval_loss))
-    print("Validation Accuracy: {}".format(eval_accuracy/nb_eval_steps))
-    pred_tags = [tags_vals[p_i] for p in predictions for p_i in p]
-    valid_tags = [tags_vals[l_ii] for l in true_labels for l_i in l for l_ii in l_i]
-    print("F1-Score: {}".format(f1_score(pred_tags, valid_tags)))
+        tensorboard_logs = {"val_loss": avg_loss, 'avg_val_acc': avg_val_acc}
+        return {'avg_val_loss': avg_loss, 'avg_val_acc': avg_val_acc,
+                'progress_bar': tensorboard_logs}
 
+    def configure_optimizers(self):
+        param_optimizer = list(self.bert.named_parameters())
+        no_decay = ['bias', 'gamma', 'beta']
+        optimizer_grouped_parameters = [
+            {'params': [p for n, p in param_optimizer if not any(nd in n for nd in no_decay)],
+            'weight_decay_rate': 0.01},
+            {'params': [p for n, p in param_optimizer if any(nd in n for nd in no_decay)],
+            'weight_decay_rate': 0.0}]
+        
+        optimizer = Adam(optimizer_grouped_parameters, lr=3e-5)
+        
+        return optimizer
+        
+
+    @pl.data_loader
+    def train_dataloader(self):
+        return train_dataloader_
+    
+    @pl.data_loader
+    def val_dataloader(self):
+        return val_dataloader_
+    
+#%%
+model = BertClassifier(num_classes=4, 
+                       bert_weights="bert-base-uncased")
+
+trainer = pl.Trainer(gpus=1, 
+                     default_save_path="task1_bert_base_logs/",
+                     max_epochs=1)
+trainer.fit(model)
 
 # %%
+#%%
