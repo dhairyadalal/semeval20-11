@@ -12,7 +12,6 @@ from torch.utils.data import TensorDataset, DataLoader, RandomSampler, Sequentia
 from tqdm import trange
 import numpy as np
 
-#%%
 dat = pd.read_csv("data/task1_data.csv")
 
 tag_to_idx = {"O": 0, "B-I": 1, "I-I": 2, "X": 3}
@@ -21,12 +20,11 @@ idx_to_tag  = ["O", "B-I", "I-I", "X"]
 tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
 
 MAX_LEN = 180
-BATCH_SIZE = 20
+BATCH_SIZE = 16
 
 def labels_to_ids(annotation: List[str]) -> List[int]:
     return [tag_to_idx[i] for i in annotation]
 
-# %%
 dat["bert_len"] = dat["bert_tokenized_text"].apply(lambda x: len(x.split()))
 dat = dat.sort_values(by=["bert_len"])
 
@@ -43,7 +41,7 @@ label_ids = pad_sequences(label_ids, maxlen=MAX_LEN, dtype="long",
                           truncating="post", 
                           padding="post")
 span_flag = dat["span_flag"]
-#%%
+
 random_state = 1988
 X_train, X_val, y_train, y_val  =  train_test_split(input_ids, label_ids,
                                                     random_state=random_state,
@@ -71,7 +69,7 @@ val_masks = torch.tensor(val_masks)
 y_train_rs = torch.tensor(y_train_rs)
 y_val = torch.tensor(y_val)
 
-# %%
+
 train_data = TensorDataset(X_train_rs, tr_masks_rs, y_train_rs)
 train_dataloader_ = DataLoader(train_data,
                                sampler=RandomSampler(train_data),
@@ -99,19 +97,24 @@ class BertClassifier(pl.LightningModule):
                  bert_weights: str):
         super(BertClassifier, self).__init__()
         
-        self.bert = BertForTokenClassification.from_pretrained(bert_weights)
+        self.bert = BertForTokenClassification.from_pretrained(bert_weights,
+                                                               num_labels=num_classes)
     
     def forward(self, 
                 input_ids: torch.tensor,
-                input_mask: torch.tensor,
+                attention_mask: torch.tensor,
                 labels: torch):
-        return self.bert(input_ids, input_mask, labels)
+        return self.bert(input_ids, 
+                         attention_mask=attention_mask, 
+                         labels=labels)
     
     def training_step(self, batch, batch_idx):
         
         input_ids, mask, labels = batch
         
-        loss = self.forward(input_ids, mask, labels)
+        loss = self.forward(input_ids, 
+                            attention_mask=mask, 
+                            labels=labels)
         loss = loss[0]
         
         tensorboard_logs = {'train_loss': loss}
@@ -120,18 +123,20 @@ class BertClassifier(pl.LightningModule):
     def validation_step(self, batch, batch_idx):
         input_ids, mask, labels = batch
         
-        loss, logits = self.forward(input_ids, mask, labels)
+        loss, logits = self.forward(input_ids, attention_mask=mask, 
+                                    labels=labels)
         
         logits = logits.detach().cpu().numpy()
         labels = labels.detach().cpu().numpy()
         
         val_acc = flat_accuracy(logits, labels)
+        val_acc = torch.tensor(val_acc)
          
         return {'val_loss': loss, 'val_acc': val_acc}
     
     def validation_end(self, outputs):
-        avg_loss = torch.stack(x["val_loss"] for x in outputs).mean()
-        avg_val_acc = torch.stack(x["val_acc"] for x in outputs).mean()
+        avg_loss = torch.stack([x["val_loss"] for x in outputs]).mean()
+        avg_val_acc = torch.stack([x["val_acc"] for x in outputs]).mean()
         
         tensorboard_logs = {"val_loss": avg_loss, 'avg_val_acc': avg_val_acc}
         return {'avg_val_loss': avg_loss, 'avg_val_acc': avg_val_acc,
@@ -149,7 +154,6 @@ class BertClassifier(pl.LightningModule):
         optimizer = Adam(optimizer_grouped_parameters, lr=3e-5)
         
         return optimizer
-        
 
     @pl.data_loader
     def train_dataloader(self):
@@ -165,8 +169,11 @@ model = BertClassifier(num_classes=4,
 
 trainer = pl.Trainer(gpus=1, 
                      default_save_path="task1_bert_base_logs/",
-                     max_epochs=1)
+                     max_epochs=1,
+                     accumulate_grad_batches=10,
+                     gradient_clip_val=1.0,
+                     train_percent_check=.005)
 trainer.fit(model)
 
+
 # %%
-#%%
