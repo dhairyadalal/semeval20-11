@@ -102,8 +102,8 @@ class BertClassifier(pl.LightningModule):
     
     def forward(self, 
                 input_ids: torch.tensor,
-                attention_mask: torch.tensor,
-                labels: torch):
+                attention_mask: torch.tensor=None,
+                labels: torch=None):
         return self.bert(input_ids, 
                          attention_mask=attention_mask, 
                          labels=labels)
@@ -167,13 +167,72 @@ class BertClassifier(pl.LightningModule):
 model = BertClassifier(num_classes=4, 
                        bert_weights="bert-base-uncased")
 
-trainer = pl.Trainer(gpus=1, 
-                     default_save_path="task1_bert_base_logs/",
-                     max_epochs=1,
-                     accumulate_grad_batches=10,
-                     gradient_clip_val=1.0,
-                     train_percent_check=.005)
-trainer.fit(model)
+# trainer = pl.Trainer(gpus=1, 
+#                      default_save_path="task1_bert_base_logs/",
+#                      max_epochs=1,
+#                      accumulate_grad_batches=10,
+#                      gradient_clip_val=1.0,
+#                      train_percent_check=.005)
+# trainer.fit(model)
 
+# %%
+test = pd.read_csv("data/task1_test.csv")
+
+
+def extract_pred_spans(prediction: List[int]) -> List[tuple]:
+    spans = []
+    start_idx = -1
+    end_idx = -1
+
+    for i, val in enumerate(prediction):
+        if val in [1,2] and start_idx == -1:
+            start_idx = i 
+        if val == 0 and start_idx != -1 and end_idx == -1:
+            end_idx = i-1
+        if start_idx != -1 and end_idx != -1:
+            spans.append((start_idx, end_idx))
+            start_idx = -1
+            end_idx = -1
+    return spans
+
+
+# %%
+from utils import get_article
+import re 
+
+model.eval()
+model.cpu()
+
+pred_rows = []
+for i,v in test.iterrows():
+    toks = tokenizer.tokenize(v["text"])
+    ids  = torch.tensor([tokenizer.convert_tokens_to_ids(toks)]) 
+    article = get_article(v["article_path"]).lower()
+    
+    with torch.no_grad():
+        preds = model(ids, attention_mask=None, labels=None)
+        preds = torch.argmax(preds[0], dim=2)
+    preds = preds.tolist()[0]
+    spans = extract_pred_spans(preds)
+    
+    for span in spans:
+        if span[0] == span[1]:
+            pred_text = tokenizer.decode([ids[0][span[0]]])
+        else:
+            pred_text = tokenizer.decode(ids[0][span[0]: span[1]])
+        
+        match = re.search(pred_text, article).span()
+
+        pred_rows.append({"article_id": v["article_id"],
+                          "pred_text": pred_text,
+                          "span_start": match[0],
+                          "span_end": match[1]})
+
+# %%
+with open("submissions/task1/task1_bert.tsv", "w") as f:
+    for row in pred_rows:
+        print(pred_rows)
+        f.write(f"{row['article_id']}\t{row['span_start']}\t{row['span_end']}\n")
+        
 
 # %%
