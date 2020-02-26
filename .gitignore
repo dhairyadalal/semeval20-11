@@ -5,3 +5,4 @@ bb_lm_ft/*
 *.pt
 runs/*
 *.pyc
+logs/*

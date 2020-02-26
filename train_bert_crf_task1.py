@@ -20,7 +20,7 @@ idx_to_tag  = ["O", "B-I", "I-I", "X"]
 tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
 
 MAX_LEN = 180
-BATCH_SIZE = 16
+BATCH_SIZE = 24
 
 def labels_to_ids(annotation: List[str]) -> List[int]:
     return [tag_to_idx[i] for i in annotation]
@@ -78,44 +78,48 @@ train_dataloader_ = DataLoader(train_data,
 val_data = TensorDataset(X_val, val_masks, y_val)
 val_dataloader_ = DataLoader(val_data, 
                              batch_size=BATCH_SIZE)
-#%%
 from seqeval.metrics import f1_score
 
 def flat_accuracy(preds, labels):
-    pred_flat = np.argmax(preds, axis=2).flatten()
+    pred_flat = preds.flatten()
     labels_flat = labels.flatten()
     return np.sum(pred_flat == labels_flat) / len(labels_flat)
 
-# %%
+#%%
 import pytorch_lightning as pl
 import torch.nn as nn
+from layers import CRF
 
-class BertClassifier(pl.LightningModule):
+class BertCRFClassifier(pl.LightningModule):
     
     def __init__(self, 
                  num_classes: int,
                  bert_weights: str):
-        super(BertClassifier, self).__init__()
+        super(BertCRFClassifier, self).__init__()
         
         self.bert = BertForTokenClassification.from_pretrained(bert_weights,
-                                                               num_labels=num_classes)
-    
+                                                               num_labels=4,
+                                                      output_hidden_states=True)
+        self.crf = CRF(num_tags=num_classes)
+        
     def forward(self, 
                 input_ids: torch.tensor,
-                attention_mask: torch.tensor=None,
-                labels: torch=None):
-        return self.bert(input_ids, 
-                         attention_mask=attention_mask, 
-                         labels=labels)
+                attention_mask: torch.tensor=None):
+        bert_out, _ = self.bert(input_ids, attention_mask=attention_mask)
+        crf_out = self.crf(bert_out) 
+        # pooled_logits = torch.mean(torch.stack(bert_logits), dim=0)        
+        return crf_out, bert_out
     
+    def crf_loss(self, 
+                 pred_logits: torch.tensor, 
+                 labels: torch.tensor) -> torch.tensor:
+        return self.crf.loss(pred_logits, labels)
+        
     def training_step(self, batch, batch_idx):
         
         input_ids, mask, labels = batch
-        
-        loss = self.forward(input_ids, 
-                            attention_mask=mask, 
-                            labels=labels)
-        loss = loss[0]
+        preds, logits = self.forward(input_ids, attention_mask=mask)
+        loss = self.crf_loss(logits, labels)        
         
         tensorboard_logs = {'train_loss': loss}
         return {'loss': loss, 'log': tensorboard_logs}
@@ -123,13 +127,13 @@ class BertClassifier(pl.LightningModule):
     def validation_step(self, batch, batch_idx):
         input_ids, mask, labels = batch
         
-        loss, logits = self.forward(input_ids, attention_mask=mask, 
-                                    labels=labels)
+        preds, logits = self.forward(input_ids, attention_mask=mask)
+        loss = self.crf_loss(logits, labels)
         
-        logits = logits.detach().cpu().numpy()
         labels = labels.detach().cpu().numpy()
+        preds  = preds.detach().cpu().numpy()
         
-        val_acc = flat_accuracy(logits, labels)
+        val_acc = flat_accuracy(preds, labels)
         val_acc = torch.tensor(val_acc)
          
         return {'val_loss': loss, 'val_acc': val_acc}
@@ -162,23 +166,20 @@ class BertClassifier(pl.LightningModule):
     @pl.data_loader
     def val_dataloader(self):
         return val_dataloader_
-    
-#%%
-model = BertClassifier(num_classes=4, 
-                       bert_weights="bert-base-uncased")
 
-# trainer = pl.Trainer(gpus=1, 
-#                      default_save_path="task1_bert_base_logs/",
-#                      max_epochs=1,
-#                      accumulate_grad_batches=10,
-#                      gradient_clip_val=1.0,
-#                      train_percent_check=.005)
-# trainer.fit(model)
+#%%
+    
+model = BertCRFClassifier(num_classes=4, 
+                          bert_weights="bert-base-uncased")
+
+trainer = pl.Trainer(gpus=1, 
+                     default_save_path="logs/task1_bertcrf_base_logs/",
+                     max_epochs=40,
+                     accumulate_grad_batches=10,
+                     gradient_clip_val=1.0)
+trainer.fit(model)
 
 # %%
-test = pd.read_csv("data/task1_test.csv")
-
-
 def extract_pred_spans(prediction: List[int]) -> List[tuple]:
     spans = []
     start_idx = -1
@@ -195,44 +196,72 @@ def extract_pred_spans(prediction: List[int]) -> List[tuple]:
             end_idx = -1
     return spans
 
+def normalize_text(text: str) -> str:
+    
+    text = text.replace("#","").replace(' ’ ', '’').replace(" - ","-").replace(" @ "," @")
+    text = text.replace(" * ", "*") 
+    return text
+    
 
-# %%
 from utils import get_article
 import re 
+from fuzzysearch import find_near_matches
+from tqdm import tqdm
 
-model.eval()
-model.cpu()
-
-pred_rows = []
-for i,v in test.iterrows():
-    toks = tokenizer.tokenize(v["text"])
-    ids  = torch.tensor([tokenizer.convert_tokens_to_ids(toks)]) 
-    article = get_article(v["article_path"]).lower()
-    
-    with torch.no_grad():
-        preds = model(ids, attention_mask=None, labels=None)
-        preds = torch.argmax(preds[0], dim=2)
-    preds = preds.tolist()[0]
-    spans = extract_pred_spans(preds)
-    
-    for span in spans:
-        if span[0] == span[1]:
-            pred_text = tokenizer.decode([ids[0][span[0]]])
-        else:
-            pred_text = tokenizer.decode(ids[0][span[0]: span[1]])
+def get_predictions(df: pd.DataFrame) -> List[dict]:
+    model.to("cuda:0")
+    model.eval()
+     
+    pred_rows = []
+    for i,v in tqdm(df.iterrows(), total= len(df)):
+        line = v["text"]
+        toks = tokenizer.tokenize(v["text"])
+        ids  = torch.tensor([tokenizer.convert_tokens_to_ids(toks)]) 
+        article = get_article(v["article_path"]).lower()
         
-        match = re.search(pred_text, article).span()
+        with torch.no_grad():
+            ids = ids.to("cuda:0")
+            preds, _ = model(ids, attention_mask=None)
+            
+        preds = preds.tolist()[0]
+        spans = extract_pred_spans(preds)
+        
+        for span in spans:
+            if span[0] == span[1]:
+                pred_text = tokenizer.decode([ids[0][span[0]]])
+            else:
+                pred_text = tokenizer.decode(ids[0][span[0]: span[1]])
+            pred_text = normalize_text(pred_text)
+            
+            if len(pred_text) < 4:
+                continue
+            
+            # Gradually increase fuzzy match dist to prevent bad match for short spans
+            max_l_dists = [0,1,2,3,4,5,6,7,8,9]
+            for dist in max_l_dists:
+                match = find_near_matches(pred_text, article, max_l_dist=dist)
+                if len(match) > 0:
+                    pred_rows.append({"article_id": v["article_id"],
+                                "pred_text": pred_text,
+                                "span_start": match[0].start,
+                                "span_end": match[0].end})
+                    break      
+    return pred_rows
 
-        pred_rows.append({"article_id": v["article_id"],
-                          "pred_text": pred_text,
-                          "span_start": match[0],
-                          "span_end": match[1]})
+dev = pd.read_csv("data/task1_dev.csv")
+test = pd.read_csv("data/task1_test.csv")
 
-# %%
-with open("submissions/task1/task1_bert.tsv", "w") as f:
-    for row in pred_rows:
-        print(pred_rows)
+print("generating dev preds")
+dev_preds = get_predictions(dev)
+
+print("generating test preds")
+test_preds = get_predictions(test)
+
+with open("submissions/task1/task1_bert_crf_dev.txt", "w") as f:
+    for row in dev_preds:
         f.write(f"{row['article_id']}\t{row['span_start']}\t{row['span_end']}\n")
-        
 
-# %%
+with open("submissions/task1/task1_bert_crf_test.txt", "w") as f:
+    for row in test_preds:
+        f.write(f"{row['article_id']}\t{row['span_start']}\t{row['span_end']}\n")
+
