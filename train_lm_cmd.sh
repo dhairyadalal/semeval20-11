@@ -1,0 +1,15 @@
+python run_lm_finetuning.py \
+    --output_dir=saved_models/lm_output_bert_large \
+    --model_type=bert \
+    --model_name_or_path=bert-large-uncased \
+    --do_train \
+    --train_data_file=data/lm_train_v2.txt \
+    --do_eval \
+    --eval_data_file=data/lm_val_v2.txt \
+    --fp16 \
+    --warmup_steps=500 \
+    --gradient_accumulation_steps=100 \
+    --num_train_epochs=5 \
+    --mlm \
+    --per_gpu_train_batch_size=1 \
+    --per_gpu_eval_batch_size=1

@@ -6,3 +6,4 @@ bb_lm_ft/*
 runs/*
 *.pyc
 logs/*
+saved_models/*

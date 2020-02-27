@@ -5,7 +5,8 @@ from imblearn.over_sampling import RandomOverSampler
 import pandas as pd
 from keras.preprocessing.sequence import pad_sequences
 from sklearn.model_selection import train_test_split
-from transformers import BertTokenizer, BertForTokenClassification, AdamW
+from sklearn.metrics import f1_score, precision_score, recall_score
+from transformers import BertTokenizer, BertForTokenClassification, BertModel
 import torch
 from torch.optim import Adam
 from torch.utils.data import TensorDataset, DataLoader, RandomSampler, SequentialSampler
@@ -59,7 +60,6 @@ X_train_rs, y_strat = ros.fit_resample(X_train, tr_span_flag)
 y_train_rs = [y_train[idx] for idx in ros.sample_indices_]
 tr_masks_rs = [tr_masks[idx] for idx in ros.sample_indices_]
 
-
 X_train_rs = torch.tensor(X_train_rs)
 X_val = torch.tensor(X_val)
 
@@ -80,35 +80,44 @@ val_dataloader_ = DataLoader(val_data,
                              batch_size=BATCH_SIZE)
 from seqeval.metrics import f1_score
 
-def flat_accuracy(preds, labels):
-    pred_flat = preds.flatten()
-    labels_flat = labels.flatten()
-    return np.sum(pred_flat == labels_flat) / len(labels_flat)
-
 #%%
 import pytorch_lightning as pl
 import torch.nn as nn
 from layers import CRF
+from transformers import AdamW
 
 class BertCRFClassifier(pl.LightningModule):
     
     def __init__(self, 
                  num_classes: int,
-                 bert_weights: str):
+                 bert_weights: str,
+                 dropout: float=.10):
         super(BertCRFClassifier, self).__init__()
         
-        self.bert = BertForTokenClassification.from_pretrained(bert_weights,
-                                                               num_labels=4,
-                                                      output_hidden_states=True)
+        self.bert = BertModel.from_pretrained(bert_weights)
+        hidden_size = self.bert.config.hidden_size
+        
+        self.lstm = torch.nn.LSTM(128,
+                                  hidden_size=128,
+                                  bidirectional=True,
+                                  batch_first=True)
+        self.dropout = torch.nn.Dropout(p=dropout)
+        self.linear1 = torch.nn.Linear(hidden_size, 256)
+        self.linear2 = torch.nn.Linear(256, 128)
+        self.linear3 = torch.nn.Linear(128*2, num_classes)
+        self.relu = torch.nn.ReLU()
         self.crf = CRF(num_tags=num_classes)
         
     def forward(self, 
                 input_ids: torch.tensor,
                 attention_mask: torch.tensor=None):
         bert_out, _ = self.bert(input_ids, attention_mask=attention_mask)
-        crf_out = self.crf(bert_out) 
-        # pooled_logits = torch.mean(torch.stack(bert_logits), dim=0)        
-        return crf_out, bert_out
+        lin1 = self.dropout(self.relu(self.linear1(bert_out)))
+        lin2 = self.dropout(self.relu(self.linear2(lin1)))
+        lstm_out, _ = self.lstm(lin2)
+        linear_out = self.dropout(self.linear3(lstm_out))
+        crf_out = self.crf(linear_out) 
+        return crf_out, linear_out
     
     def crf_loss(self, 
                  pred_logits: torch.tensor, 
@@ -130,33 +139,43 @@ class BertCRFClassifier(pl.LightningModule):
         preds, logits = self.forward(input_ids, attention_mask=mask)
         loss = self.crf_loss(logits, labels)
         
-        labels = labels.detach().cpu().numpy()
-        preds  = preds.detach().cpu().numpy()
+        labels = labels.detach().cpu().numpy().flatten()
+        preds  = preds.detach().cpu().numpy().flatten()
         
-        val_acc = flat_accuracy(preds, labels)
-        val_acc = torch.tensor(val_acc)
-         
-        return {'val_loss': loss, 'val_acc': val_acc}
+        recall = recall_score(labels, preds, average="macro")
+        recall = torch.tensor(recall)
+        
+        precision = precision_score(labels, preds, average="macro")
+        precision = torch.tensor(precision)
+        return {'val_loss': loss, 
+                "recall": recall, 
+                "precision": precision}
     
     def validation_end(self, outputs):
-        avg_loss = torch.stack([x["val_loss"] for x in outputs]).mean()
-        avg_val_acc = torch.stack([x["val_acc"] for x in outputs]).mean()
         
-        tensorboard_logs = {"val_loss": avg_loss, 'avg_val_acc': avg_val_acc}
-        return {'avg_val_loss': avg_loss, 'avg_val_acc': avg_val_acc,
+        avg_loss = torch.stack([x["val_loss"] for x in outputs]).mean()
+        avg_recall = torch.stack([x["recall"] for x in outputs]).mean()
+        avg_precision = torch.stack([x["precision"] for x in outputs]).mean()
+        
+        tensorboard_logs = {"val_loss": avg_loss, 
+                            'avg_val_recall': avg_recall,
+                            'avg_val_precision': avg_precision}
+        return {'avg_val_loss': avg_loss, 
+                'avg_val_recall': avg_recall,
+                'avg_val_precision': avg_precision,
                 'progress_bar': tensorboard_logs}
 
     def configure_optimizers(self):
         # param_optimizer = list(self.bert.named_parameters())
         # no_decay = ['bias', 'gamma', 'beta']
+        # #no_decay = ["bias", "LayerNorm.weight"]
         # optimizer_grouped_parameters = [
         #     {'params': [p for n, p in param_optimizer if not any(nd in n for nd in no_decay)],
         #     'weight_decay_rate': 0.01},
         #     {'params': [p for n, p in param_optimizer if any(nd in n for nd in no_decay)],
         #     'weight_decay_rate': 0.0}]
         
-        # optimizer = Adam(optimizer_grouped_parameters, lr=3e-5)
-        
+        # optimizer = Adam(optimizer_grouped_parameters, lr=2e-5)
         param_optimizer = list(self.parameters())
         no_decay = ["bias", "LayerNorm.weight"]
         optimizer_grouped_parameters = [
@@ -171,8 +190,6 @@ class BertCRFClassifier(pl.LightningModule):
                           lr=5e-5, 
                           eps=1e-8)
         return optimizer
-        
-        return optimizer
 
     @pl.data_loader
     def train_dataloader(self):
@@ -183,16 +200,19 @@ class BertCRFClassifier(pl.LightningModule):
         return val_dataloader_
 
 #%%
-    
+
 model = BertCRFClassifier(num_classes=4, 
                           bert_weights="bert-base-uncased")
 
 trainer = pl.Trainer(gpus=1, 
                      default_save_path="logs/task1_bertcrf_base_logs/",
-                     max_epochs=40,
-                     accumulate_grad_batches=10,
-                     gradient_clip_val=1.0)
+                     accumulate_grad_batches=50,
+                     gradient_clip_val=1.0,
+                     max_epochs=10)
 trainer.fit(model)
+
+# print("finished training. Saving model ....")
+# torch.save(model.state_dict(), "saved_models/bert_custom.pt")
 
 # %%
 def extract_pred_spans(prediction: List[int]) -> List[tuple]:
@@ -228,7 +248,7 @@ def get_predictions(df: pd.DataFrame) -> List[dict]:
     model.eval()
      
     pred_rows = []
-    for i,v in tqdm(df.iterrows(), total= len(df)):
+    for i,v in df.iterrows():
         line = v["text"]
         toks = tokenizer.tokenize(v["text"])
         ids  = torch.tensor([tokenizer.convert_tokens_to_ids(toks)]) 
@@ -260,22 +280,26 @@ def get_predictions(df: pd.DataFrame) -> List[dict]:
                                 "pred_text": pred_text,
                                 "span_start": match[0].start,
                                 "span_end": match[0].end})
-                    break      
+                    break    
     return pred_rows
-
+#%%
 dev = pd.read_csv("data/task1_dev.csv")
 test = pd.read_csv("data/task1_test.csv")
 
 print("generating dev preds")
 dev_preds = get_predictions(dev)
+pd.DataFrame(dev_preds).to_csv("submissions/task1/custom_dev.csv")
 
 print("generating test preds")
 test_preds = get_predictions(test)
+pd.DataFrame(test_preds).to_csv("submissions/task1/custom_test.csv")
 
-with open("submissions/task1/task1_bert_crf_adamw_dev.txt", "w") as f:
+with open("submissions/task1/task1_bert_custom_dev.txt", "w") as f:
     for row in dev_preds:
         f.write(f"{row['article_id']}\t{row['span_start']}\t{row['span_end']}\n")
 
-with open("submissions/task1/task1_bert_crf__adamw_test.txt", "w") as f:
+with open("submissions/task1/task1_bert_custom_test.txt", "w") as f:
     for row in test_preds:
+        print("writing: ", row)
         f.write(f"{row['article_id']}\t{row['span_start']}\t{row['span_end']}\n")
+
