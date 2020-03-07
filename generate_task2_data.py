@@ -46,6 +46,8 @@ def extract_annotations(file: str, source: str) -> pd.DataFrame:
                     if span_text in line:
                         span_text["context"] = line
                         break
+            if span["context"] == "?":
+                span["context"] = span_text
                 
             span["text"] = span_text
             span["source"] = source
@@ -59,10 +61,8 @@ print("movin on to dev ... ")
 dev_annot = extract_annotations(dev_file, "dev")
 print("finihsed extracting dev ... ")
 print("movin on to test ... ")
-
 test_annot = extract_annotations(test_file, "test")
 print("finihsed")
-#%%
+
 t2_dat = pd.concat([train_annot, dev_annot, test_annot])
 t2_dat.to_csv("data/task2_data.csv")
-# %%
