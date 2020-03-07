@@ -52,3 +52,14 @@ def get_article_file(article_id: int) -> str:
 
 def get_dev_article_file(article_id: int) -> str:
     return "data/dev-articles/article" + str(article_id) + ".txt"
+
+def get_article_by_id(article_id: int, type: str) -> str:
+    
+    if type == 'train':
+        file = "data/train-articles/article" + str(article_id) + ".txt"
+    elif type == 'dev':
+        file = "data/dev-articles/article" + str(article_id) + ".txt"
+    else:
+        file = "data/test-articles/article" + str(article_id) + ".txt"
+        
+    return get_article(file)

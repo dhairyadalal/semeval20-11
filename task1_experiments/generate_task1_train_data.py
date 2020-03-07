@@ -34,7 +34,8 @@ dev_df.to_csv("data/task1_dev.csv")
 
 # # 1. Generate train labels
 with open("data/train-task1-SI.labels", "r") as f:
-    train_lines = f.readlines()
+    train_lines = f.readlines()from utils import get_article, get_span, get_span_text, get_article_file, \
+get_task1_file, get_gold_spans, get_dev_article_file
 
 article_ids = [t.split("\t")[0] for t in train_lines]
 article_ids = list(set(article_ids))
