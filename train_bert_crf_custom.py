@@ -19,8 +19,8 @@ tag_to_idx = {"O": 0, "B-I": 1, "I-I": 2, "X": 3}
 idx_to_tag  = ["O", "B-I", "I-I", "X"]
 
 MAX_LEN = 180
-BATCH_SIZE = 8
-WEIGHTS = "bert-large-uncased"
+BATCH_SIZE = 24
+WEIGHTS = "saved_models/lm_output"
 
 tokenizer = BertTokenizer.from_pretrained(WEIGHTS)
 
@@ -185,15 +185,16 @@ class BertCRFClassifier(pl.LightningModule):
 model = BertCRFClassifier(num_classes=4, 
                           bert_weights=WEIGHTS)
 
-# trainer = pl.Trainer(gpus=1, 
+# trainer = pl.Trainer(gpus=[1], 
 #                      default_save_path="logs/task1/",
 #                      max_epochs=10,
 #                      accumulate_grad_batches=10,
 #                      gradient_clip_val=1.0)
 # trainer.fit(model)
 
-# torch.save(model.state_dict(), "saved_models/bert_large_crf.pt")
-model.load_state_dict(torch.load("saved_models/bert_large_crf.pt"))
+# torch.save(model.state_dict(), "saved_models/bert_crf_custom.pt")
+model.load_state_dict(torch.load("saved_models/bert_crf_custom.pt"))
+
 # %%
 def extract_pred_spans(prediction: List[int]) -> List[tuple]:
     spans = []
@@ -223,32 +224,24 @@ import re
 from fuzzysearch import find_near_matches
 from tqdm import tqdm
 
+device = "cuda:1"
 def get_predictions(df: pd.DataFrame) -> List[dict]:
-    model.to("cuda:0")
+    model.to("cuda:1")
     model.eval()
      
     pred_rows = []
     for i,v in tqdm(df.iterrows(), total= len(df)):
-       
         line = v["text"]
-        
-        if line == "[SKIP]":
-            continue
-        
-        
         toks = tokenizer.tokenize(v["text"])
         ids  = torch.tensor([tokenizer.convert_tokens_to_ids(toks)]) 
         article = get_article(v["article_path"]).lower()
         
-        try:       
-            with torch.no_grad():
-                ids = ids.to("cuda:0")
-                preds, _ = model(ids, attention_mask=None)
-                
-            preds = preds.tolist()[0]
-            spans = extract_pred_spans(preds)
-        except:
-            continue
+        with torch.no_grad():
+            ids = ids.to("cuda:1")
+            preds, _ = model(ids, attention_mask=None)
+
+        preds = preds.tolist()[0]
+        spans = extract_pred_spans(preds)
         
         for span in spans:
             if span[0] == span[1]:
@@ -281,10 +274,10 @@ dev_preds = get_predictions(dev)
 print("generating test preds")
 test_preds = get_predictions(test)
 
-with open("submissions/task1/task1_bert_large_crf.txt", "w") as f:
+with open("submissions/task1/task1_bert_crf_custom.txt", "w") as f:
     for row in dev_preds:
         f.write(f"{row['article_id']}\t{row['span_start']}\t{row['span_end']}\n")
 
-with open("submissions/task1/task1_bert_large_crf", "w") as f:
+with open("submissions/task1/task1_bert_crf_custom", "w") as f:
     for row in test_preds:
         f.write(f"{row['article_id']}\t{row['span_start']}\t{row['span_end']}\n")

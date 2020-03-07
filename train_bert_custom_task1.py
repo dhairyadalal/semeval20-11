@@ -18,7 +18,7 @@ dat = pd.read_csv("data/task1_data.csv")
 tag_to_idx = {"O": 0, "B-I": 1, "I-I": 2, "X": 3}
 idx_to_tag  = ["O", "B-I", "I-I", "X"]
 
-tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
+tokenizer = BertTokenizer.from_pretrained("saved_models/lm_output/")
 
 MAX_LEN = 180
 BATCH_SIZE = 24
@@ -81,9 +81,10 @@ val_dataloader_ = DataLoader(val_data,
 from seqeval.metrics import f1_score
 
 #%%
+import torch.nn.functional as F
 import pytorch_lightning as pl
 import torch.nn as nn
-from layers import CRF
+from layers import CRF, SelfAttention
 from transformers import AdamW
 
 class BertCRFClassifier(pl.LightningModule):
@@ -95,29 +96,34 @@ class BertCRFClassifier(pl.LightningModule):
         super(BertCRFClassifier, self).__init__()
         
         self.bert = BertModel.from_pretrained(bert_weights)
+        
+        for param in list(self.bert.parameters())[:-5]:
+            param.requires_grad = False
+        
         hidden_size = self.bert.config.hidden_size
         
-        self.lstm = torch.nn.LSTM(128,
-                                  hidden_size=128,
-                                  bidirectional=True,
-                                  batch_first=True)
-        self.dropout = torch.nn.Dropout(p=dropout)
-        self.linear1 = torch.nn.Linear(hidden_size, 256)
-        self.linear2 = torch.nn.Linear(256, 128)
-        self.linear3 = torch.nn.Linear(128*2, num_classes)
-        self.relu = torch.nn.ReLU()
+        self.span_clf_head = nn.Linear(hidden_size, num_classes)
+        self.binary_clf_head = nn.Linear(hidden_size, 2)
+        
+        self.attention = SelfAttention(hidden_size, batch_first=True)
+        
+        self.dropout = nn.Dropout(p=dropout)        
         self.crf = CRF(num_tags=num_classes)
         
     def forward(self, 
                 input_ids: torch.tensor,
-                attention_mask: torch.tensor=None):
-        bert_out, _ = self.bert(input_ids, attention_mask=attention_mask)
-        lin1 = self.dropout(self.relu(self.linear1(bert_out)))
-        lin2 = self.dropout(self.relu(self.linear2(lin1)))
-        lstm_out, _ = self.lstm(lin2)
-        linear_out = self.dropout(self.linear3(lstm_out))
-        crf_out = self.crf(linear_out) 
-        return crf_out, linear_out
+                attention_mask: torch.tensor,
+                sent_lens: torch.tensor):        
+        bert_last, bert_hidden = self.bert(input_ids, attention_mask=attention_mask)
+        
+        span_attention = self.attention(bert_last, sent_lens)
+        bin_attention  = self.attention(bert_hidden, sent_lens)
+        
+        span_clf = self.dropout(self.span_clf_head(span_attention))
+        bin_clf = self.dropout(self.binary_clf_head(bin_attention))
+        crf_out = self.crf(span_clf)        
+        
+        return crf_out, span_clf, bin_clf
     
     def crf_loss(self, 
                  pred_logits: torch.tensor, 
@@ -127,56 +133,80 @@ class BertCRFClassifier(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         
         input_ids, mask, labels = batch
-        preds, logits = self.forward(input_ids, attention_mask=mask)
-        loss = self.crf_loss(logits, labels)        
         
-        tensorboard_logs = {'train_loss': loss}
-        return {'loss': loss, 'log': tensorboard_logs}
+        sent_lengths = torch.sum(labels, dim=1).long().to("cuda:0")
+        
+        bin_labels = (torch.sum(labels, dim=1) > 0).long()
+        bin_labels = bin_labels.to("cuda:0")
+        preds, span_logits, bin_logits = self.forward(input_ids, 
+                                                      attention_mask=mask,
+                                                      sent_lens=sent_lengths)
+        
+        span_loss = self.crf_loss(span_logits, labels)        
+        bin_loss = F.cross_entropy(bin_logits, bin_labels)
+        combined_loss = span_loss + bin_loss
+        
+        tensorboard_logs = {'train_loss': combined_loss}
+        return {'loss': combined_loss, 'log': tensorboard_logs}
     
     def validation_step(self, batch, batch_idx):
         input_ids, mask, labels = batch
         
-        preds, logits = self.forward(input_ids, attention_mask=mask)
-        loss = self.crf_loss(logits, labels)
+        sent_lengths = torch.sum(labels, dim=1).long().to("cuda:0")
+
+        
+        bin_labels = (torch.sum(labels, dim=1) > 0).long()
+        bin_labels = bin_labels.to("cuda:0")
+        preds, span_logits, bin_logits = self.forward(input_ids, 
+                                                      attention_mask=mask,
+                                                      sent_lens=sent_lengths)
+        
+        span_loss = self.crf_loss(span_logits, labels)        
+        bin_loss = F.cross_entropy(bin_logits, bin_labels)
+        combined_loss = span_loss + bin_loss
         
         labels = labels.detach().cpu().numpy().flatten()
-        preds  = preds.detach().cpu().numpy().flatten()
+        bin_labels = bin_labels.detach().cpu().numpy().flatten()
+        span_preds  = preds.detach().cpu().numpy().flatten()
         
-        recall = recall_score(labels, preds, average="macro")
-        recall = torch.tensor(recall)
+        bin_preds  = torch.argmax(bin_logits,dim=1).detach().cpu().numpy().flatten()
         
-        precision = precision_score(labels, preds, average="macro")
-        precision = torch.tensor(precision)
-        return {'val_loss': loss, 
-                "recall": recall, 
-                "precision": precision}
+        span_recall = torch.tensor(recall_score(labels, span_preds, 
+                                                average="macro"))
+        bin_recall  = torch.tensor(recall_score(bin_labels, bin_preds, 
+                                                average="macro"))
+        
+        span_precision = torch.tensor(precision_score(labels, span_preds, 
+                                                      average="macro"))
+        bin_precision = torch.tensor(precision_score(bin_labels, bin_preds, 
+                                                      average="macro"))
+        
+        return {'val_loss': combined_loss, 
+                "span_recall": span_recall, 
+                "bin_recall": bin_recall, 
+                "span_precision": span_precision,
+                "bin_precision": bin_precision}
     
     def validation_end(self, outputs):
         
         avg_loss = torch.stack([x["val_loss"] for x in outputs]).mean()
-        avg_recall = torch.stack([x["recall"] for x in outputs]).mean()
-        avg_precision = torch.stack([x["precision"] for x in outputs]).mean()
         
-        tensorboard_logs = {"val_loss": avg_loss, 
-                            'avg_val_recall': avg_recall,
-                            'avg_val_precision': avg_precision}
+        avg_span_recall = torch.stack([x["span_recall"] for x in outputs]).mean()
+        avg_bin_recall = torch.stack([x["bin_recall"] for x in outputs]).mean()
+        
+        avg_span_precision = torch.stack([x["span_precision"] for x in outputs]).mean()
+        avg_bin_precision = torch.stack([x["bin_precision"] for x in outputs]).mean()
+        
+        tensorboard_logs = {"val_loss": avg_loss}
         return {'avg_val_loss': avg_loss, 
-                'avg_val_recall': avg_recall,
-                'avg_val_precision': avg_precision,
+                'avg_val_span_recall': avg_span_recall,
+                'avg_val_bin_recall': avg_bin_recall,
+                'avg_val_span_precision': avg_span_precision,
+                'avg_val_bin_precision': avg_bin_precision,
                 'progress_bar': tensorboard_logs}
 
     def configure_optimizers(self):
-        # param_optimizer = list(self.bert.named_parameters())
-        # no_decay = ['bias', 'gamma', 'beta']
-        # #no_decay = ["bias", "LayerNorm.weight"]
-        # optimizer_grouped_parameters = [
-        #     {'params': [p for n, p in param_optimizer if not any(nd in n for nd in no_decay)],
-        #     'weight_decay_rate': 0.01},
-        #     {'params': [p for n, p in param_optimizer if any(nd in n for nd in no_decay)],
-        #     'weight_decay_rate': 0.0}]
-        
-        # optimizer = Adam(optimizer_grouped_parameters, lr=2e-5)
-        param_optimizer = list(self.parameters())
+        param_optimizer = list(self.named_parameters())
         no_decay = ["bias", "LayerNorm.weight"]
         optimizer_grouped_parameters = [
             {
@@ -187,7 +217,7 @@ class BertCRFClassifier(pl.LightningModule):
              "weight_decay": 0.0}
         ]
         optimizer = AdamW(optimizer_grouped_parameters, 
-                          lr=5e-5, 
+                          lr=2e-5, 
                           eps=1e-8)
         return optimizer
 
@@ -202,17 +232,17 @@ class BertCRFClassifier(pl.LightningModule):
 #%%
 
 model = BertCRFClassifier(num_classes=4, 
-                          bert_weights="bert-base-uncased")
+                          bert_weights="saved_models/lm_output/")
 
 trainer = pl.Trainer(gpus=1, 
-                     default_save_path="logs/task1_bertcrf_base_logs/",
+                     default_save_path="logs/task1_custom/",
                      accumulate_grad_batches=50,
-                     gradient_clip_val=1.0,
+                     gradient_clip_val=5.0,
                      max_epochs=10)
 trainer.fit(model)
 
-# print("finished training. Saving model ....")
-# torch.save(model.state_dict(), "saved_models/bert_custom.pt")
+print("finished training. Saving model ....")
+torch.save(model.state_dict(), "saved_models/bert_custom_2_joint.pt")
 
 # %%
 def extract_pred_spans(prediction: List[int]) -> List[tuple]:
@@ -248,19 +278,28 @@ def get_predictions(df: pd.DataFrame) -> List[dict]:
     model.eval()
      
     pred_rows = []
-    for i,v in df.iterrows():
+    for i,v in tqdm(df.iterrows(), total=len(df)):
         line = v["text"]
+        
+        if line == "[SKIP]":
+            continue
+        
         toks = tokenizer.tokenize(v["text"])
         ids  = torch.tensor([tokenizer.convert_tokens_to_ids(toks)]) 
         article = get_article(v["article_path"]).lower()
         
         with torch.no_grad():
             ids = ids.to("cuda:0")
-            preds, _ = model(ids, attention_mask=None)
-            
-        preds = preds.tolist()[0]
-        spans = extract_pred_spans(preds)
+            span_preds, span_logits, bin_logits = model(ids, 
+                                                        attention_mask=None)
+                        
+        spans = extract_pred_spans(span_preds.tolist()[0])
         
+        bin_pred = torch.argmax(bin_logits, dim =1)
+        
+        if bin_pred[0] == 0:
+            continue
+            
         for span in spans:
             if span[0] == span[1]:
                 pred_text = tokenizer.decode([ids[0][span[0]]])
@@ -288,18 +327,14 @@ test = pd.read_csv("data/task1_test.csv")
 
 print("generating dev preds")
 dev_preds = get_predictions(dev)
-pd.DataFrame(dev_preds).to_csv("submissions/task1/custom_dev.csv")
 
 print("generating test preds")
 test_preds = get_predictions(test)
-pd.DataFrame(test_preds).to_csv("submissions/task1/custom_test.csv")
 
-with open("submissions/task1/task1_bert_custom_dev.txt", "w") as f:
+with open("submissions/task1/task1_bert_custom_joint_2_dev.txt", "w") as f:
     for row in dev_preds:
         f.write(f"{row['article_id']}\t{row['span_start']}\t{row['span_end']}\n")
 
-with open("submissions/task1/task1_bert_custom_test.txt", "w") as f:
+with open("submissions/task1/task1_bert_custom_joint_2_test.txt", "w") as f:
     for row in test_preds:
-        print("writing: ", row)
         f.write(f"{row['article_id']}\t{row['span_start']}\t{row['span_end']}\n")
-

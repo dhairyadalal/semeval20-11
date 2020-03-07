@@ -1,3 +1,8 @@
+"""
+TorchNLP implementation of Conditional Random Fields
+https://github.com/kolloldas/torchnlp/blob/master/torchnlp/modules/crf.py
+"""
+
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
