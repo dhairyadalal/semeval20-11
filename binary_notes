@@ -1,0 +1,19 @@
+Bert-Base Binary                                                                                                                          
+              precision    recall  f1-score   support
+
+           0       0.84      0.86      0.85      1838
+           1       0.55      0.51      0.53       604
+
+    accuracy                           0.78      2442
+   macro avg       0.70      0.69      0.69      2442
+weighted avg       0.77      0.78      0.77      2442
+
+Bert-Large
+	            precision    recall  f1-score   support
+
+           0       0.89      0.67      0.77      1838
+           1       0.43      0.75      0.54       604
+
+    accuracy                           0.69      2442
+   macro avg       0.66      0.71      0.65      2442
+weighted avg       0.78      0.69      0.71      2442
