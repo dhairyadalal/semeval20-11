@@ -51,6 +51,7 @@ def extract_annotations(file: str, source: str) -> pd.DataFrame:
                 
             span["text"] = span_text
             span["source"] = source
+            span["article_id"] = aid
             final.append(span)
 
     return pd.DataFrame(final)
@@ -64,5 +65,8 @@ print("movin on to test ... ")
 test_annot = extract_annotations(test_file, "test")
 print("finihsed")
 
-t2_dat = pd.concat([train_annot, dev_annot, test_annot])
+t2_dat = pd.concat([train_annot, dev_annot, test_annot], ignore_index=True)
 t2_dat.to_csv("data/task2_data.csv")
+
+
+# %%

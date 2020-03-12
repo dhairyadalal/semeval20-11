@@ -8,7 +8,7 @@ from imblearn.over_sampling import RandomOverSampler
 from sklearn.metrics import classification_report
 
 
-dat = pd.read_csv("datasets/task_2_data.csv")
+dat = pd.read_csv("data/task2_data.csv")
 le = LabelEncoder()
 
 train_dat = dat[dat["source"]=="train"]
@@ -29,7 +29,7 @@ train["encoded_label"] = le.fit_transform(train["label"])
 from tokenizers import ByteLevelBPETokenizer
 
 tokenizer = ByteLevelBPETokenizer()
-tokenizer.train("datasets/all_text_corpus.txt", 
+tokenizer.train("data/all_text_corpus.txt", 
                 vocab_size=15000, 
                 min_frequency=2,
                 show_progress=True)
@@ -93,49 +93,49 @@ from sklearn.ensemble import RandomForestClassifier
 
 # %%
 
-val_preds = rfclf.predict(val_inputs)
-val_preds = le.inverse_transform(val_preds)
+# val_preds = rfclf.predict(val_inputs)
+# val_preds = le.inverse_transform(val_preds)
 
-print(classification_report(val_preds, val_labels))
-
-# %%
+# print(classification_report(val_preds, val_labels))
 
 # %%
-dev_preds = rfclf.predict(dev_inputs)
 
-dev_preds = le.inverse_transform(dev_preds)
+# %%
+# dev_preds = rfclf.predict(dev_inputs)
+
+# dev_preds = le.inverse_transform(dev_preds)
 
 # %%
 #%%
-with open("datasets/dev-task-TC-template.out", "r") as f:
-    lines = f.readlines()
+# with open("datasets/dev-task-TC-template.out", "r") as f:
+#     lines = f.readlines()
     
-print(lines[0]) 
-# %%
-final = []
-for i, line in enumerate(lines):
-    pred = dev_preds[i].strip()
-    line = line.replace("?", pred)
-    final.append(line)
+# print(lines[0]) 
+# # %%
+# final = []
+# for i, line in enumerate(lines):
+#     pred = dev_preds[i].strip()
+#     line = line.replace("?", pred)
+#     final.append(line)
 
 
-# %%
-with open("submissions/random_forest_base.txt", "w") as f:
-    for line in final:
-        f.write(line)
+# # %%
+# with open("submissions/random_forest_base.txt", "w") as f:
+#     for line in final:
+#         f.write(line)
 
-#%%
+# #%%
 
-clf = RandomForestClassifier(random_state=random_seed, 
-                             verbose=True, n_jobs=-1)
+# clf = RandomForestClassifier(random_state=random_seed, 
+#                              verbose=True, n_jobs=-1)
 
-param_grid = {'n_estimators': [100, 200, 300, 400, 500],
-              'max_features': ['auto', 'sqrt', 'log2'],
-              'max_depth' : [4,5,6,7,8],
-              'criterion' :['gini', 'entropy']}
+# param_grid = {'n_estimators': [100, 200, 300, 400, 500],
+#               'max_features': ['auto', 'sqrt', 'log2'],
+#               'max_depth' : [4,5,6,7,8],
+#               'criterion' :['gini', 'entropy']}
 
-CV_clf = GridSearchCV(estimator=clf, param_grid=param_grid, cv=10)
-#CV_clf.fit(X_train_all_resampled, y_train_all_resampled)
+# CV_clf = GridSearchCV(estimator=clf, param_grid=param_grid, cv=10)
+# #CV_clf.fit(X_train_all_resampled, y_train_all_resampled)
 
 # Best Params
 # {'criterion': 'entropy',
@@ -144,8 +144,8 @@ CV_clf = GridSearchCV(estimator=clf, param_grid=param_grid, cv=10)
 #  'n_estimators': 500}
 
 #%%
-clf = CV_clf.best_estimator_
-dev_preds = clf.predict(dev_inputs)
+# clf = CV_clf.best_estimator_
+# dev_preds = clf.predict(dev_inputs)
 
 # %%
 from typing import List
@@ -166,7 +166,7 @@ def write_t2_preds(preds: List[str], file_name: str):
         for line in final:
             f.write(line) 
 
-write_t2_preds(dev_preds, "random_forest_all_train.txt")    
+# write_t2_preds(dev_preds, "random_forest_all_train.txt")    
 
 # %%
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -182,28 +182,28 @@ tfidf = TfidfVectorizer(lowercase=True,
 tfidf.fit(fit_text)
 X = tfidf.fit_transform(all_text)
 
-clf2 = RandomForestClassifier(random_state=random_seed, 
-                             verbose=True, 
-                             n_jobs=-1)
+# clf2 = RandomForestClassifier(random_state=random_seed, 
+#                              verbose=True, 
+#                              n_jobs=-1)
 
-param_grid = {'n_estimators': [500],
-              'max_features': ['auto'],
-              'max_depth' : [8],
-              'criterion' :['entropy']}
+# param_grid = {'n_estimators': [500],
+#               'max_features': ['auto'],
+#               'max_depth' : [8],
+#               'criterion' :['entropy']}
 
-CV2_clf = GridSearchCV(estimator=clf2, param_grid=param_grid, cv=10)
-CV2_clf.fit(X, y_train_all_resampled)
-#%%
-clf2 = CV2_clf.best_estimator_
+# CV2_clf = GridSearchCV(estimator=clf2, param_grid=param_grid, cv=10)
+# CV2_clf.fit(X, y_train_all_resampled)
+# #%%
+# clf2 = CV2_clf.best_estimator_
 
-# %%
+# # %%
 X_dev = tfidf.transform(dev_text)
 
-dev_preds = clf2.predict(X_dev)
+# dev_preds = clf2.predict(X_dev)
 
 
-# %%
-write_t2_preds(dev_preds, "random_forest_tfidf.txt")    
+# # %%
+# write_t2_preds(dev_preds, "random_forest_tfidf.txt")    
 
 
 # %%
@@ -215,7 +215,10 @@ tuned_parameters = [{'kernel': ['rbf'], 'gamma': [1e-3, 1e-4],
 y = le.transform(y_train_all_resampled)
 
 CV3_clf = GridSearchCV(estimator=SVC(verbose=True), 
-                       param_grid=tuned_parameters, cv=5)
+                       param_grid=tuned_parameters, 
+                       cv=5,
+                       verbose=True,
+                       n_jobs=-1)
 CV3_clf.fit(X, y)
 
 # %%
@@ -225,8 +228,8 @@ clf3 = CV3_clf.best_estimator_
 dev_preds = clf3.predict(X_dev)
 dev_preds = le.inverse_transform(dev_preds)
 
-# %%
-write_t2_preds(dev_preds, "SVM_classifier_tfidf.txt")    
+# # %%
+# write_t2_preds(dev_preds, "SVM_classifier_tfidf.txt")    
 
 
-# %%
+# # %%
